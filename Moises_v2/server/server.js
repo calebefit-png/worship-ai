@@ -1,8 +1,10 @@
 require('dotenv').config();
+
 const express = require('express');
 const path = require('path');
 const helmet = require('helmet');
 const cors = require('cors');
+
 const { ensureDirectories } = require('./utils/fsUtils');
 const logger = require('./middleware/logger');
 const errorHandler = require('./middleware/errorHandler');
@@ -26,6 +28,9 @@ app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Servir arquivos processados e frontend
+app.use('/processed', express.static(path.join(__dirname, 'processed')));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // Rotas
