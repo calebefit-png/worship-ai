@@ -1,4 +1,4 @@
-f/**
+
  * player-ui.js
  * -----------------------------------------------------------------------
  * Liga o StemPlayer (player.js) e o WaveformRenderer (waveform.js) aos
