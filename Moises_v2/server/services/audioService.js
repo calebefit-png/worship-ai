@@ -1,44 +1,50 @@
 const fs = require('fs');
 const path = require('path');
 
-async function processDemucs(inputPath, outDir) {
-  try {
-    // garante a pasta de saída
-    fs.mkdirSync(outDir, { recursive: true });
+const PROCESSED_DIR = path.join(__dirname, '..', 'processed');
 
-    const stems = ['vocals', 'drums', 'bass', 'other'];
-    const result = [];
+async function processDemucs(inputPath, trackId) {
+  const outDir = path.join(PROCESSED_DIR, trackId);
 
-    for (const stem of stems) {
-      const filename = `${stem}.wav`;
-      const dest = path.join(outDir, filename);
+  fs.mkdirSync(outDir, { recursive: true });
 
-      // copia o arquivo original para cada stem demo
-      fs.copyFileSync(inputPath, dest);
+  const stems = ['vocals', 'drums', 'bass', 'other'];
 
-      result.push({
-        name: stem,
-        filename,
-        path: dest,
-        url: `/processed/${path.basename(outDir)}/${filename}`
-      });
-    }
+  for (const stem of stems) {
+    const dest = path.join(outDir, `${stem}.wav`);
 
-    return {
-      success: true,
-      demoMode: true,
-      stems: result
-    };
-  } catch (err) {
-    console.error('ERRO NO MODO DEMO:', err);
-
-    return {
-      success: false,
-      demoMode: true,
-      error: err.message,
-      stems: []
-    };
+    // modo demo: copia o áudio original
+    fs.copyFileSync(inputPath, dest);
   }
+
+  return {
+    success: true,
+    demoMode: true
+  };
 }
 
-module.exports = { processDemucs };
+function listStems(trackId) {
+  const stemsDir = path.join(PROCESSED_DIR, trackId);
+
+  if (!fs.existsSync(stemsDir)) return [];
+
+  return ['vocals', 'drums', 'bass', 'other']
+    .map((stem) => {
+      const filename = `${stem}.wav`;
+      const filePath = path.join(stemsDir, filename);
+
+      if (!fs.existsSync(filePath)) return null;
+
+      return {
+        stem,
+        name: filename,
+        url: `/processed/${trackId}/${filename}`
+      };
+    })
+    .filter(Boolean);
+}
+
+module.exports = {
+  processDemucs,
+  listStems
+};
