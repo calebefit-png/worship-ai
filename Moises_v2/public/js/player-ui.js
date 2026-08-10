@@ -1,16 +1,9 @@
-
+/*
  * player-ui.js
- * -----------------------------------------------------------------------
+ * --------------------------------------------------
  * Liga o StemPlayer (player.js) e o WaveformRenderer (waveform.js) aos
- * elementos do DOM: upload por arraste ou clique, progresso em tempo real
- * (SSE), histórico de projetos, montagem das linhas de canal a partir dos
- * stems retornados pela API, play/pause global, seek sincronizado,
- * volume/mute/solo por stem (com persistência em localStorage) e waveform
- * em canvas. Inclui atalhos de teclado: Espaço (play/pause), M (mute do
- * canal focado), S (solo do canal focado).
- * -----------------------------------------------------------------------
+ * elementos do DOM...
  */
-
 const API_BASE = 'https://worship-ai-api.onrender.com/api/v1/audio';
 const VOLUME_PRESETS_KEY = 'moises_v2_volume_presets';
 
