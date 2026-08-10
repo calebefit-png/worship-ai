@@ -4,7 +4,7 @@
  * Liga o StemPlayer (player.js) e o WaveformRenderer (waveform.js) aos
  * elementos do DOM...
  */
-const API_BASE = 'https://worship-ai-api.onrender.com/api/v1/audio';
+const API_BASE = 'https://worship-ai.onrender.com/api/v1/audio';
 const VOLUME_PRESETS_KEY = 'moises_v2_volume_presets';
 
 const els = {
