@@ -101,17 +101,47 @@ router.get('/tracks/:id', async (req, res, next) => {
 });
 
 // 5. Listar Stems (vocals, drums, bass, other) de uma Track Concluída
-router.get('/tracks/:id/stems', async (req, res, next) => {
+router.get('/tracks/:id/stems', async (req, res) => {
   try {
-    const track = await db.get('SELECT * FROM tracks WHERE id = ?', [req.params.id]);
+    const trackId = req.params.id;
 
-    if (!track) return res.status(404).json({ error: 'Track não encontrada.' });
-    if (track.status !== 'COMPLETED') return res.status(400).json({ error: 'O processamento desta track ainda não foi concluído.' });
+    const track = await db.get(
+      'SELECT * FROM tracks WHERE id = ?',
+      [trackId]
+    );
 
-    const stems = audioService.listStems(track.id);
-    res.json({ trackId: track.id, stems });
+    if (!track) {
+      return res.status(404).json({ error: 'Track não encontrada.' });
+    }
+
+    const stemsDir = path.join(__dirname, '..', 'processed', trackId);
+
+    const stems = ['vocals', 'drums', 'bass', 'other']
+      .map((name) => {
+        const filename = `${name}.wav`;
+        const filePath = path.join(stemsDir, filename);
+
+        if (!fs.existsSync(filePath)) return null;
+
+        return {
+          stem: name,
+          name: filename,
+          url: `/processed/${trackId}/${filename}`
+        };
+      })
+      .filter(Boolean);
+
+    return res.json({
+      trackId,
+      demoMode: true,
+      stems
+    });
   } catch (error) {
-    next(error);
+    console.error('Erro ao carregar stems:', error);
+
+    return res.status(500).json({
+      error: 'Erro interno ao carregar stems'
+    });
   }
 });
 
