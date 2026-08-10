@@ -100,10 +100,24 @@ router.get('/tracks/:id', async (req, res, next) => {
   }
 });
 
-// 5. Listar Stems (vocals, drums, bass, other) de uma Track Concluída
+// 5. Listar Stems (vocals, drums, bass, other)
 router.get('/tracks/:id/stems', async (req, res) => {
   try {
     const trackId = req.params.id;
+
+    // Modo demo
+    if (trackId === 'demo') {
+      return res.json({
+        trackId: 'demo',
+        demoMode: true,
+        stems: [
+          { stem: 'vocals', name: 'vocals.wav', url: '/processed/demo/vocals.wav' },
+          { stem: 'drums',  name: 'drums.wav',  url: '/processed/demo/drums.wav'  },
+          { stem: 'bass',   name: 'bass.wav',   url: '/processed/demo/bass.wav'   },
+          { stem: 'other',  name: 'other.wav',  url: '/processed/demo/other.wav'  }
+        ]
+      });
+    }
 
     const track = await db.get(
       'SELECT * FROM tracks WHERE id = ?',
@@ -133,7 +147,6 @@ router.get('/tracks/:id/stems', async (req, res) => {
 
     return res.json({
       trackId,
-      demoMode: true,
       stems
     });
   } catch (error) {
