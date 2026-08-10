@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Moises v2 — Player Multifaixa</title>
+  <link rel="stylesheet" href="/css/player.css" />
+</head>
+<body>
+
+  <div class="player-shell">
+    <div class="player-header">
+      <div class="player-title">Player Multifaixa</div>
+      <div class="player-loadbar" id="load-status"></div>
+    </div>
+
+    <div class="dropzone" id="dropzone">
+      <input type="file" id="file-input" accept=".mp3,.wav,audio/mpeg,audio/wav,audio/x-wav" hidden />
+      <div class="dropzone-text">
+        <strong>Arraste um MP3 ou WAV aqui</strong>
+        <span>ou clique para escolher um arquivo</span>
+      </div>
+    </div>
+
+    <div class="progress-panel" id="progress-panel" hidden>
+      <div class="progress-row">
+        <span class="progress-label" id="progress-label">Enviando...</span>
+        <span class="progress-percent" id="progress-percent">0%</span>
+      </div>
+      <div class="progress-track">
+        <div class="progress-fill" id="progress-fill"></div>
+      </div>
+    </div>
+
+    <div class="history-panel">
+      <div class="history-header">
+        <span>Histórico de projetos</span>
+        <button type="button" id="refresh-history-btn" class="icon-btn" title="Atualizar">↻</button>
+      </div>
+      <div class="history-list" id="history-list"></div>
+    </div>
+
+    <form class="track-id-form" id="track-form">
+      <input type="text" id="track-id-input" placeholder="Ou cole aqui o trackId de uma track já processada" />
+      <button type="submit" id="load-btn">Carregar</button>
+    </form>
+
+    <div class="transport">
+      <button class="play-btn" id="play-btn" disabled aria-label="Play/Pause">
+        <svg id="play-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        <svg id="pause-icon" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+      </button>
+      <div class="time-display" id="time-current">0:00</div>
+      <div class="seek-bar" id="seek-bar">
+        <div class="seek-bar-fill" id="seek-fill"></div>
+        <div class="seek-bar-handle" id="seek-handle"></div>
+      </div>
+      <div class="time-display" id="time-duration">0:00</div>
+    </div>
+
+    <div class="channel-list" id="channel-list"></div>
+
+    <div class="player-status" id="player-status"></div>
+    <div class="shortcuts-hint">Atalhos: <kbd>Espaço</kbd> play/pause · <kbd>M</kbd> mute do canal focado · <kbd>S</kbd> solo do canal focado</div>
+  </div>
+
+  <script src="/js/waveform.js"></script>
+  <script src="/js/player.js"></script>
+  <script src="/js/player-ui.js"></script>
+</body>
+</html>
