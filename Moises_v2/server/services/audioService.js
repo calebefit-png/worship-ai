@@ -2,35 +2,31 @@ const fs = require('fs');
 const path = require('path');
 
 async function processDemucs(inputPath, outDir) {
-  try {
-    // Simula processamento real por alguns segundos
-    await new Promise(resolve => setTimeout(resolve, 2000));
+  fs.mkdirSync(outDir, { recursive: true });
 
-    fs.mkdirSync(outDir, { recursive: true });
+  const stems = ['vocals', 'drums', 'bass', 'other'];
+  const result = [];
 
-    const stems = ['vocals', 'drums', 'bass', 'other'];
-    const result = {};
+  for (const stem of stems) {
+    const filename = `${stem}.wav`;
+    const dest = path.join(outDir, filename);
 
-    for (const stem of stems) {
-      const dest = path.join(outDir, `${stem}.wav`);
-      fs.copyFileSync(inputPath, dest);
-      result[stem] = dest;
-    }
+    // Copia o arquivo original para cada stem demo
+    fs.copyFileSync(inputPath, dest);
 
-    return {
-      success: true,
-      demoMode: true,
-      stems: result
-    };
-  } catch (err) {
-    console.error('Erro no modo demo:', err);
-
-    return {
-      success: false,
-      demoMode: true,
-      error: err.message
-    };
+    result.push({
+      name: stem,
+      filename,
+      path: dest,
+      url: `/processed/${path.basename(outDir)}/${filename}`
+    });
   }
+
+  return {
+    success: true,
+    demoMode: true,
+    stems: result
+  };
 }
 
 module.exports = {
