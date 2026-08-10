@@ -31,7 +31,7 @@ app.use(express.urlencoded({ extended: true }));
 
 // Servir arquivos processados e frontend
 app.use('/processed', express.static(path.join(__dirname, 'processed')));
-app.use(express.static(path.join(__dirname, '..', 'public')));
+app.use('/processed', express.static(path.join(__dirname, 'processed')));
 
 // Rotas
 app.use('/api/v1/audio', audioRoutes);
