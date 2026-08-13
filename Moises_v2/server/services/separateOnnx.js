@@ -26,9 +26,11 @@ const path = require('path');
 const logger = require('../middleware/logger');
 
 const MODEL_DIR = process.env.MODEL_DIR || path.resolve(__dirname, '..', '..', 'models');
-const MODEL_NAME = 'htdemucs.onnx';
-const MODEL_URL =
-  'https://huggingface.co/MrCitron/demucs-v4-onnx/resolve/main/htdemucs.onnx';
+// A variante INT8 reduz a sessão de ~447 MiB para ~316 MiB durante inferência.
+// Isso mantém a separação real de 4 stems dentro do limite de 512 MiB do Render.
+const MODEL_NAME = process.env.MODEL_NAME || 'htdemucs.int8.onnx';
+const MODEL_URL = process.env.MODEL_URL || '';
+const MODEL_MIN_BYTES = Number(process.env.MODEL_MIN_BYTES || 100_000_000);
 
 // Parâmetros HT-Demucs
 const SR = 44100;
@@ -60,36 +62,46 @@ async function ensureModel() {
 
   if (fs.existsSync(modelPath)) {
     const stat = await fsp.stat(modelPath);
-    if (stat.size > 250000000) {
+    if (stat.size >= MODEL_MIN_BYTES) {
       modelReady = modelPath;
       logger.info(`Modelo HT-Demucs carregado: ${modelPath} (${stat.size} bytes)`);
       return;
     }
-    logger.warn('Modelo corrompido/incompleto, removendo e baixando novamente.');
+    logger.warn('Modelo corrompido/incompleto, removendo-o.');
     await fsp.unlink(modelPath);
   }
 
-  logger.info(`Baixando modelo HT-Demucs (~302MB) para ${modelPath}...`);
+  // Em produção, o modelo INT8 é gerado no build e já deve estar presente.
+  // Um URL opcional existe apenas para instalações que optarem pelo download.
+  if (!MODEL_URL) {
+    throw new Error(
+      `Modelo de separação ausente: ${modelPath}. Execute o script de preparação no build ou defina MODEL_URL.`
+    );
+  }
+
+  const tempPath = `${modelPath}.download`;
+  logger.info(`Baixando modelo HT-Demucs para ${tempPath}...`);
   try {
     const res = await fetch(MODEL_URL, { redirect: 'follow' });
-    if (!res.ok) throw new Error(`Falha no download do modelo (HTTP ${res.status})`);
+    if (!res.ok || !res.body) {
+      throw new Error(`Falha no download do modelo (HTTP ${res.status})`);
+    }
 
-    // Node: converte o body (ReadableStream) em Readable para pipe ao disco
+    // Grava em arquivo temporário e só publica após o stream terminar.
+    // Isso evita que uma reinicialização aceite um .onnx truncado como válido.
     const { Readable } = require('stream');
-    const diskStream = fs.createWriteStream(modelPath);
-    await new Promise((resolve, reject) => {
-      const nodeStream = Readable.fromWeb ? Readable.fromWeb(res.body) : res.body;
-      nodeStream.on('data', (chunk) => diskStream.write(chunk));
-      nodeStream.on('end', () => {
-        diskStream.end();
-        resolve();
-      });
-      nodeStream.on('error', reject);
-      diskStream.on('error', reject);
-    });
+    const { pipeline } = require('stream/promises');
+    await fsp.rm(tempPath, { force: true });
+    await pipeline(Readable.fromWeb(res.body), fs.createWriteStream(tempPath, { flags: 'w' }));
+    const stat = await fsp.stat(tempPath);
+    if (stat.size < MODEL_MIN_BYTES) {
+      throw new Error(`Download incompleto (${stat.size} bytes)`);
+    }
+    await fsp.rename(tempPath, modelPath);
     modelReady = modelPath;
     logger.info('Modelo HT-Demucs baixado com sucesso.');
   } catch (err) {
+    await fsp.rm(tempPath, { force: true }).catch(() => {});
     modelError = err;
     throw new Error(`Não foi possível baixar o modelo de separação: ${err.message}`);
   }
@@ -153,8 +165,13 @@ async function separateFile(normalizedMonoWav, outDir, progressCb) {
 
   const session = await ort.InferenceSession.create(path.join(MODEL_DIR, MODEL_NAME), {
     executionProviders: ['cpu'],
-    graphOptimizationLevel: 'basic',
-    intraOpNumThreads: 2,
+    // Prioriza limite de memória do Render em vez de otimizações agressivas.
+    graphOptimizationLevel: 'disabled',
+    executionMode: 'sequential',
+    enableCpuMemArena: false,
+    enableMemPattern: false,
+    intraOpNumThreads: 1,
+    interOpNumThreads: 1,
   });
   logger.info('Sessão ONNX criada para HT-Demucs.');
 
@@ -182,10 +199,11 @@ async function separateFile(normalizedMonoWav, outDir, progressCb) {
   // Acumuladores por stem (2 canais) com pesos da janela de Hann
   const outLen = effectiveTotal;
   const accumulators = {};
-  const weights = {};
+  // O peso é idêntico para todos os stems; mantê-lo uma única vez economiza
+  // três vetores Float32 grandes durante o processamento de faixas longas.
+  const weights = new Float32Array(outLen);
   for (const stem of STEM_NAMES) {
     accumulators[stem] = [new Float32Array(outLen), new Float32Array(outLen)];
-    weights[stem] = new Float32Array(outLen);
   }
 
   // OLA/COLA: com stride de 50% do overlap, a soma dos quadrados da janela
@@ -211,32 +229,40 @@ async function separateFile(normalizedMonoWav, outDir, progressCb) {
     const mixTensor = new ort.Tensor('float32', mixData, [1, 2, SEG_SAMPLES]);
     const feeds = { input: mixTensor };
 
-    const output = await session.run(feeds);
-    // output.output: (1, 4, 2, segLen) — row-major
-    const outData = output.output.data;
+    // Cada resultado ONNX carrega um ArrayBuffer externo grande (~11 MiB).
+    // Mantê-lo no escopo mínimo permite que a GC libere a janela antes da
+    // próxima inferência — essencial nos 512 MiB do Render.
+    {
+      const output = await session.run(feeds);
+      // output.output: (1, 4, 2, segLen) — row-major
+      const outData = output.output.data;
 
-    for (let s = 0; s < STEM_NAMES.length; s++) {
-      const stem = STEM_NAMES[s];
-      const [accL, accR] = accumulators[stem];
-      const wt = weights[stem];
-      for (let i = 0; i < SEG_SAMPLES; i++) {
-        // peso: região central = 1; bordas de sobreposição usam a janela de
-        // Hann ao quadrado (OLA/COLA). A janela é aplicada SOMENTE se o modelo
-        // não embutir a própria janela na saída (verificado empiricamente).
-        // Verificado empiricamente: o export MrCitron já aplica a janela de Hann
-        // na saída (overlap-add com pesos unitários conserva melhor a energia:
-        // 79% vs 77% com janela dupla). Por isso usamos peso 1 nas bordas também.
-        const finalWgt = 1;
+      for (let s = 0; s < STEM_NAMES.length; s++) {
+        const stem = STEM_NAMES[s];
+        const [accL, accR] = accumulators[stem];
+        for (let i = 0; i < SEG_SAMPLES; i++) {
+          // peso: região central = 1; bordas de sobreposição usam a janela de
+          // Hann ao quadrado (OLA/COLA). A janela é aplicada SOMENTE se o modelo
+          // não embutir a própria janela na saída (verificado empiricamente).
+          // Verificado empiricamente: o export MrCitron já aplica a janela de Hann
+          // na saída (overlap-add com pesos unitários conserva melhor a energia:
+          // 79% vs 77% com janela dupla). Por isso usamos peso 1 nas bordas também.
+          const finalWgt = 1;
 
-        const idx = start + i;
-        if (idx < outLen) {
-          accL[idx] += outData[s * 2 * SEG_SAMPLES + i] * finalWgt;
-          accR[idx] += outData[s * 2 * SEG_SAMPLES + SEG_SAMPLES + i] * finalWgt;
-          wt[idx] += finalWgt;
+          const idx = start + i;
+          if (idx < outLen) {
+            accL[idx] += outData[s * 2 * SEG_SAMPLES + i] * finalWgt;
+            accR[idx] += outData[s * 2 * SEG_SAMPLES + SEG_SAMPLES + i] * finalWgt;
+            if (s === 0) weights[idx] += finalWgt;
+          }
         }
       }
     }
 
+    // O processo é iniciado com --expose-gc em produção. Se esse sinalizador
+    // não estiver presente, a aplicação continua correta; apenas deixa a GC
+    // decidir o melhor momento para coletar os buffers externos.
+    if (typeof global.gc === 'function') global.gc();
     if (progressCb) progressCb((w + 1) / total);
   }
 
@@ -248,7 +274,7 @@ async function separateFile(normalizedMonoWav, outDir, progressCb) {
   fs.mkdirSync(outDir, { recursive: true });
   for (const stem of STEM_NAMES) {
     const [accL, accR] = accumulators[stem];
-    const wt = weights[stem];
+    const wt = weights;
     const outL = new Float32Array(numSamples);
     const outR = new Float32Array(numSamples);
     let maxAbs = 1e-6;
