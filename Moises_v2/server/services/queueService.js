@@ -23,20 +23,51 @@ const processQueue = async () => {
 
   try {
     logger.info(`Processando track: ${task.id}`);
-    await db.run('UPDATE tracks SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', ['PROCESSING', task.id]);
-    emitProgress(task.id, { status: 'PROCESSING', percent: 0, message: 'Iniciando separação...' });
 
-    await audioService.processDemucs(task.id, task.filepath, (percent, message) => {
-      emitProgress(task.id, { status: 'PROCESSING', percent, message });
-    });
+    await db.run(
+      'UPDATE tracks SET status = ?, processing_started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      ['PROCESSING', task.id]
+    );
+    emitProgress(task.id, { status: 'PROCESSING', percent: 0, message: 'Iniciando processamento...' });
 
-    await db.run('UPDATE tracks SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', ['COMPLETED', task.id]);
+    // Assinatura correta: processDemucs(inputPath, trackId, progressCb)
+    const progressCb = (percent, message) => {
+      emitProgress(task.id, {
+        status: 'PROCESSING',
+        percent: Math.min(99, percent || 0),
+        message: message || 'Processando...',
+      });
+    };
+
+    await audioService.processDemucs(task.filepath, task.id, progressCb);
+
+    // Validação obrigatória: só marca COMPLETED se os 4 stems forem
+    // WAVs reais, não vazios e com cabeçalho válido.
+    const validation = await audioService.validateStems(task.id);
+    const invalid = validation.filter((r) => !r.valid);
+    if (invalid.length > 0) {
+      throw new Error(
+        `Stems inválidos após o processamento: ${invalid.map((r) => r.stem).join(', ')}.`
+      );
+    }
+
+    await db.run(
+      'UPDATE tracks SET status = ?, processing_completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      ['COMPLETED', task.id]
+    );
     emitProgress(task.id, { status: 'COMPLETED', percent: 100, message: 'Concluído.' });
-    logger.info(`Track ${task.id} finalizada.`);
+    logger.info(`Track ${task.id} finalizada com sucesso.`);
   } catch (error) {
     logger.error(`Falha ao processar track ${task.id}: ${error.message}`);
-    await db.run('UPDATE tracks SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', ['FAILED', task.id]);
-    emitProgress(task.id, { status: 'FAILED', percent: 0, message: error.message || 'Erro no processamento.' });
+    await db.run(
+      'UPDATE tracks SET status = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      ['FAILED', error.message || 'Erro desconhecido no processamento.', task.id]
+    );
+    emitProgress(task.id, {
+      status: 'FAILED',
+      percent: 0,
+      message: error.message || 'Erro no processamento.',
+    });
   } finally {
     isProcessing = false;
     processQueue(); // Puxa o próximo da fila

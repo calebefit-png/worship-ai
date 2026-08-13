@@ -2,7 +2,7 @@
 publish = "."
 
 [[redirects]]
-from = "/api/*"
-to = "https://worship-ai-api.onrender.com/api/:splat"
+from = "/api/v1/*"
+to = "https://worship-ai-node.onrender.com/api/v1/:splat"
 status = 200
 force = true

@@ -7,6 +7,17 @@ const db = require('../db/database');
 const queueService = require('../services/queueService');
 const audioService = require('../services/audioService');
 const { v4: uuidv4 } = require('uuid');
+const { PROCESSED_DIR, stemWavPath } = require('../services/separatorPaths');
+const { assertInsideDirectory } = require('../utils/fsUtils');
+
+// Modo demo isolado (trackId reservado 'demo') — serve apenas os 4 arquivos
+// de demonstração válidos de Moises_v2/server/processed/demo. Não interfere
+// com nenhuma track real.
+const DEMO_DIR = path.join(PROCESSED_DIR, 'demo');
+
+function isStemName(stem) {
+  return ['vocals', 'drums', 'bass', 'other'].includes(stem);
+}
 
 // 1. Upload de Áudio
 router.post('/upload', upload.single('file'), async (req, res, next) => {
@@ -22,7 +33,6 @@ router.post('/upload', upload.single('file'), async (req, res, next) => {
       [trackId, originalName, filename, 'PENDING']
     );
 
-    // Adiciona na fila de separação do Demucs
     queueService.addJob(trackId, req.file.path);
 
     res.status(201).json({
@@ -48,21 +58,34 @@ router.get('/tracks/:id/progress', async (req, res, next) => {
     });
     res.flushHeaders();
 
-    const send = (payload) => {
-      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    const send = (eventType, payload) => {
+      try {
+        res.write(`event: ${eventType}\ndata: ${JSON.stringify(payload)}\n\n`);
+      } catch (err) {
+        // cliente já desconectou
+      }
     };
 
     // Estado inicial imediato (evita a UI ficar esperando o primeiro evento)
-    send({ status: track.status, percent: track.status === 'COMPLETED' ? 100 : 0, message: track.status });
+    send('status', { status: track.status, percent: track.status === 'COMPLETED' ? 100 : 0, message: track.status });
 
     // Se já terminou (concluído ou falhou), não há mais nada a esperar.
     if (track.status === 'COMPLETED' || track.status === 'FAILED') {
       return res.end();
     }
 
+    // Heartbeat para proxies/load balancers não matarem a conexão
+    const heartbeat = setInterval(() => {
+      res.write(': heartbeat\n\n');
+    }, 15000);
+
     const listener = (payload) => {
-      send(payload);
+      const eventType = payload.status === 'COMPLETED' ? 'completed'
+        : payload.status === 'FAILED' ? 'failed'
+        : 'progress';
+      send(eventType, payload);
       if (payload.status === 'COMPLETED' || payload.status === 'FAILED') {
+        clearInterval(heartbeat);
         queueService.progressEmitter.removeListener(track.id, listener);
         res.end();
       }
@@ -71,6 +94,7 @@ router.get('/tracks/:id/progress', async (req, res, next) => {
     queueService.progressEmitter.on(track.id, listener);
 
     req.on('close', () => {
+      clearInterval(heartbeat);
       queueService.progressEmitter.removeListener(track.id, listener);
     });
   } catch (error) {
@@ -91,9 +115,12 @@ router.get('/tracks', async (req, res, next) => {
 // 4. Status de uma Track Específica
 router.get('/tracks/:id', async (req, res, next) => {
   try {
+    if (req.params.id === 'demo') {
+      return res.status(404).json({ error: 'Track não encontrada.' });
+    }
     const track = await db.get('SELECT * FROM tracks WHERE id = ?', [req.params.id]);
     if (!track) return res.status(404).json({ error: 'Track não encontrada.' });
-    
+
     res.json(track);
   } catch (error) {
     next(error);
@@ -105,17 +132,16 @@ router.get('/tracks/:id/stems', async (req, res) => {
   try {
     const trackId = req.params.id;
 
-    // Modo demo
+    // Modo demo isolado
     if (trackId === 'demo') {
       return res.json({
         trackId: 'demo',
         demoMode: true,
-        stems: [
-          { stem: 'vocals', name: 'vocals.wav', url: '/processed/demo/vocals.wav' },
-          { stem: 'drums',  name: 'drums.wav',  url: '/processed/demo/drums.wav'  },
-          { stem: 'bass',   name: 'bass.wav',   url: '/processed/demo/bass.wav'   },
-          { stem: 'other',  name: 'other.wav',  url: '/processed/demo/other.wav'  }
-        ]
+        stems: audioService.STEM_NAMES.map((name) => ({
+          stem: name,
+          name: `${name}.wav`,
+          url: `/processed/demo/${name}.wav`
+        }))
       });
     }
 
@@ -128,22 +154,21 @@ router.get('/tracks/:id/stems', async (req, res) => {
       return res.status(404).json({ error: 'Track não encontrada.' });
     }
 
-    const stemsDir = path.join(__dirname, '..', 'processed', trackId);
+    const stems = audioService.listStems(trackId);
 
-    const stems = ['vocals', 'drums', 'bass', 'other']
-      .map((name) => {
-        const filename = `${name}.wav`;
-        const filePath = path.join(stemsDir, filename);
+    // Só lista stems de tracks COMPLETED; tracks em outro estado não
+    // expõem arquivos inexistentes à UI.
+    if (track.status !== 'COMPLETED') {
+      return res.status(400).json({
+        error: 'O processamento desta track ainda não foi concluído.',
+        status: track.status,
+        stems: []
+      });
+    }
 
-        if (!fs.existsSync(filePath)) return null;
-
-        return {
-          stem: name,
-          name: filename,
-          url: `/processed/${trackId}/${filename}`
-        };
-      })
-      .filter(Boolean);
+    if (stems.length === 0) {
+      return res.status(404).json({ error: 'Nenhum stem encontrado para esta track.' });
+    }
 
     return res.json({
       trackId,
@@ -161,18 +186,47 @@ router.get('/tracks/:id/stems', async (req, res) => {
 // 6. Streaming de um Stem Individual (necessário para o player Web Audio API)
 router.get('/tracks/:id/stems/:stem', async (req, res, next) => {
   try {
+    const stem = req.params.stem;
+    if (!isStemName(stem)) {
+      return res.status(404).json({ error: `Stem '${stem}' não encontrada.` });
+    }
+
+    // Modo demo isolado
+    if (req.params.id === 'demo') {
+      const filePath = assertInsideDirectory(
+        path.join(DEMO_DIR, `${stem}.wav`),
+        DEMO_DIR
+      );
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ error: `Arquivo demo '${stem}.wav' não encontrado.` });
+      }
+      const stat = fs.statSync(filePath);
+      res.set('Content-Type', 'audio/wav');
+      res.set('Accept-Ranges', 'bytes');
+      fs.createReadStream(filePath).pipe(res);
+      return;
+    }
+
     const track = await db.get('SELECT * FROM tracks WHERE id = ?', [req.params.id]);
-
     if (!track) return res.status(404).json({ error: 'Track não encontrada.' });
-    if (track.status !== 'COMPLETED') return res.status(400).json({ error: 'O processamento desta track ainda não foi concluído.' });
+    if (track.status !== 'COMPLETED') {
+      return res.status(400).json({ error: 'O processamento desta track ainda não foi concluído.' });
+    }
 
-    const stems = audioService.listStems(track.id);
-    const match = stems.find((s) => s.stem === req.params.stem);
-    if (!match) return res.status(404).json({ error: `Stem '${req.params.stem}' não encontrada.` });
+    // Caminho físico validado contra path traversal
+    const filePath = assertInsideDirectory(
+      stemWavPath(track.id, stem),
+      PROCESSED_DIR
+    );
 
-    const filePath = path.join(process.env.PROCESSED_DIR, track.id, match.name);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: `Stem '${stem}' não encontrada.` });
+    }
+
+    const stat = fs.statSync(filePath);
     res.set('Content-Type', 'audio/wav');
     res.set('Accept-Ranges', 'bytes');
+    res.set('Content-Length', String(stat.size));
     fs.createReadStream(filePath).pipe(res);
   } catch (error) {
     next(error);
@@ -183,7 +237,7 @@ router.get('/tracks/:id/stems/:stem', async (req, res, next) => {
 router.get('/tracks/:id/download', async (req, res, next) => {
   try {
     const track = await db.get('SELECT * FROM tracks WHERE id = ?', [req.params.id]);
-    
+
     if (!track) return res.status(404).json({ error: 'Track não encontrada.' });
     if (track.status !== 'COMPLETED') return res.status(400).json({ error: 'O processamento desta track ainda não foi concluído.' });
 

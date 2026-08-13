@@ -1,0 +1,15 @@
+node_modules/
+models/
+uploads/
+logs/
+*.sqlite
+*.log
+test-*.js
+test-*.log
+analyze_sep.py
+inspect_model.py
+models-*.onnx
+Moises_v2.zip
+.DS_Store
+*.pid
+scripts/downgrade_ir.py
