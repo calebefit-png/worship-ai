@@ -14,6 +14,8 @@ const { PROCESSED_DIR } = require('./services/separatorPaths');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+// Identificador explícito para diagnosticar o deploy sem expor dados sensíveis.
+const RELEASE_ID = process.env.RELEASE_ID || 'int8-memory-fix-20260814';
 
 // Garantir que as pastas existam
 ensureDirectories();
@@ -47,7 +49,7 @@ app.get('/', (req, res) => {
 
 // Health check (usado pelo Render para monitorar o serviço)
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', release: RELEASE_ID, timestamp: new Date().toISOString() });
 });
 
 // Rotas da API
