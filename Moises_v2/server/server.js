@@ -15,7 +15,7 @@ const { PROCESSED_DIR } = require('./services/separatorPaths');
 const app = express();
 const PORT = process.env.PORT || 3000;
 // Identificador explícito para diagnosticar o deploy sem expor dados sensíveis.
-const RELEASE_ID = process.env.RELEASE_ID || 'int8-memory-fix-20260814';
+const RELEASE_ID = process.env.RELEASE_ID || 'open-unmix-512m-20260814';
 
 // Garantir que as pastas existam
 ensureDirectories();
