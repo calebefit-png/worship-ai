@@ -4,7 +4,7 @@
   "description": "Backend para separação de áudio (estilo Moises)",
   "main": "server/server.js",
   "scripts": {
-    "prepare-model": "python3 -m pip install --user --disable-pip-version-check onnx==1.22.0 onnxruntime==1.28.0 && python3 scripts/prepare-int8-model.py",
+    "prepare-model": "python3 -m pip install --user --break-system-packages --disable-pip-version-check onnx==1.22.0 onnxruntime==1.28.0 && python3 scripts/prepare-int8-model.py",
     "postinstall": "npm run prepare-model",
     "start": "node --expose-gc --max-old-space-size=128 server/server.js",
     "dev": "node --expose-gc --max-old-space-size=128 node_modules/nodemon/bin/nodemon.js server/server.js"
