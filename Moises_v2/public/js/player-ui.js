@@ -349,6 +349,10 @@ async function loadTrack(trackId, opts = {}) {
     if (opts.autoPlay) await player.play();
     setFocus(focusedStem);
   } catch (err) {
+    if (player) {
+      try { player.destroy(); } catch (e) { /* noop */ }
+      player = null;
+    }
     setStatus(`Falha ao carregar a track: ${err.message}`, true);
     els.playBtn.disabled = true;
     els.loadStatus.textContent = '';

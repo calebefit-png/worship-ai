@@ -52,29 +52,56 @@ class StemPlayer {
   onEnded(cb) { this._onEnded = cb; }
   onLoadProgress(cb) { this._onLoadProgress = cb; }
 
-  /** Carrega e decodifica todos os stems em paralelo. */
+  /**
+   * Carrega e decodifica os stems em sequência.
+   *
+   * O Render Free pode demorar vários segundos para entregar cada WAV. Fazer
+   * quatro downloads/decodificações de 5–6 MB em paralelo deixa o navegador
+   * preso em 1/4 em alguns cold starts. A sequência mantém o pico de memória
+   * baixo e o timeout transforma uma falha silenciosa em uma mensagem útil.
+   */
   async load() {
     let loaded = 0;
     const total = this.stemNames.length;
+    const timeoutMs = 45000;
 
-    await Promise.all(this.stemNames.map(async (stem) => {
-      const res = await fetch(`${this.apiBase}/tracks/${this.trackId}/stems/${stem}`);
-      if (!res.ok) throw new Error(`Falha ao carregar stem '${stem}' (HTTP ${res.status})`);
-      const arrayBuffer = await res.arrayBuffer();
-      const audioBuffer = await this.ctx.decodeAudioData(arrayBuffer);
+    for (const stem of this.stemNames) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      let encoded = null;
 
-      this.buffers[stem] = audioBuffer;
-      this.duration = Math.max(this.duration, audioBuffer.duration);
+      try {
+        const url = `${this.apiBase}/tracks/${encodeURIComponent(this.trackId)}/stems/${encodeURIComponent(stem)}`;
+        const res = await fetch(url, {
+          cache: 'no-store',
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-      const gainNode = this.ctx.createGain();
-      gainNode.connect(this.masterGain);
-      this.gainNodes[stem] = gainNode;
-      this.userVolume[stem] = 1;
-      this.muted[stem] = false;
+        encoded = await res.arrayBuffer();
+        if (encoded.byteLength < 44) throw new Error('WAV vazio ou inválido');
+        const audioBuffer = await this.ctx.decodeAudioData(encoded);
 
-      loaded++;
-      if (this._onLoadProgress) this._onLoadProgress(loaded, total);
-    }));
+        this.buffers[stem] = audioBuffer;
+        this.duration = Math.max(this.duration, audioBuffer.duration);
+
+        const gainNode = this.ctx.createGain();
+        gainNode.connect(this.masterGain);
+        this.userVolume[stem] = 1;
+        this.muted[stem] = false;
+
+        loaded++;
+        if (this._onLoadProgress) this._onLoadProgress(loaded, total);
+      } catch (err) {
+        const detail = err && err.name === 'AbortError'
+          ? `tempo limite de ${Math.round(timeoutMs / 1000)}s`
+          : (err && err.message ? err.message : String(err));
+        throw new Error(`Falha ao carregar stem '${stem}': ${detail}`);
+      } finally {
+        clearTimeout(timeout);
+        encoded = null;
+      }
+    }
 
     this._applyGains();
   }
