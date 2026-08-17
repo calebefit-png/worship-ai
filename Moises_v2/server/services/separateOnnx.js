@@ -11,6 +11,7 @@
 
 const fs = require('fs');
 const fsp = require('fs/promises');
+const { fork } = require('child_process');
 const path = require('path');
 const { Readable } = require('stream');
 const { pipeline } = require('stream/promises');
@@ -223,21 +224,94 @@ async function separateStem(ort, stem, signal, totalBlocks, progressCb, stemInde
   return normalizeAndCrop(left, right, weights, signal.length);
 }
 
-async function separateFile(normalizedMonoWav, outDir, progressCb) {
+function runStemInChild(job) {
+  return new Promise((resolve, reject) => {
+    const child = fork(__filename, ['--stem-worker'], {
+      execArgv: ['--expose-gc'],
+      env: { ...process.env, MODEL_DIR },
+      stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+    });
+
+    let finished = false;
+    const timeout = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`Timeout ao separar o stem ${job.stem}.`));
+    }, Number(process.env.STEM_WORKER_TIMEOUT_MS || 180000));
+
+    const finish = (callback) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeout);
+      callback();
+    };
+
+    child.on('message', (message) => {
+      if (message.type === 'progress' && job.progressCb) {
+        job.progressCb(message.fraction);
+      } else if (message.type === 'done') {
+        finish(() => resolve());
+      } else if (message.type === 'error') {
+        finish(() => reject(new Error(message.error)));
+      }
+    });
+    child.on('error', (error) => finish(() => reject(error)));
+    child.on('exit', (code, signal) => {
+      if (!finished && code !== 0) {
+        finish(() => reject(new Error(`Worker do stem ${job.stem} terminou com ${signal || `código ${code}`}.`)));
+      }
+    });
+
+    child.send({
+      type: 'start',
+      normalizedMonoWav: job.normalizedMonoWav,
+      outputPath: job.outputPath,
+      stem: job.stem,
+    });
+  });
+}
+
+async function runStemWorker() {
+  const message = await new Promise((resolve, reject) => {
+    process.once('message', resolve);
+    process.once('error', reject);
+  });
+  if (!message || message.type !== 'start') throw new Error('Mensagem de inicialização do worker inválida.');
+
   const ort = require('onnxruntime-node');
-  await ensureModel();
   const { readWavFloat32 } = await import('./wavReader.mjs');
-  const { signal, sampleRate } = await readWavFloat32(normalizedMonoWav);
+  const { signal, sampleRate } = await readWavFloat32(message.normalizedMonoWav);
   if (sampleRate !== SR) throw new Error(`Taxa de amostragem inesperada: ${sampleRate}`);
   if (!signal.length) throw new Error('O áudio normalizado não contém amostras.');
 
   const naturalFrames = Math.max(1, Math.ceil((signal.length + 2 * PAD - NFFT) / HOP) + 1);
   const totalBlocks = Math.ceil(naturalFrames / FRAMES_PER_BLOCK);
+  const [left, right] = await separateStem(
+    ort,
+    message.stem,
+    signal,
+    totalBlocks,
+    (fraction) => {
+      if (process.send) process.send({ type: 'progress', fraction: Math.min(1, fraction * STEM_NAMES.length) });
+    },
+    0,
+  );
+  writeWavStereo(message.outputPath, left, right, SR);
+  if (process.send) process.send({ type: 'done' });
+}
+
+async function separateFile(normalizedMonoWav, outDir, progressCb) {
+  await ensureModel();
   fs.mkdirSync(outDir, { recursive: true });
   for (let index = 0; index < STEM_NAMES.length; index++) {
     const stem = STEM_NAMES[index];
-    const [left, right] = await separateStem(ort, stem, signal, totalBlocks, progressCb, index);
-    writeWavStereo(path.join(outDir, `${stem}.wav`), left, right, SR);
+    await runStemInChild({
+      stem,
+      normalizedMonoWav,
+      outputPath: path.join(outDir, `${stem}.wav`),
+      progressCb: (stemFraction) => {
+        if (progressCb) progressCb((index + stemFraction) / STEM_NAMES.length);
+      },
+    });
     logger.info(`Stem Open-Unmix gravado: ${stem}.wav`);
     if (typeof global.gc === 'function') global.gc();
   }
@@ -245,3 +319,12 @@ async function separateFile(normalizedMonoWav, outDir, progressCb) {
 }
 
 module.exports = { separateFile, ensureModel };
+
+if (process.argv[2] === '--stem-worker') {
+  runStemWorker()
+    .then(() => process.exit(0))
+    .catch((error) => {
+      if (process.send) process.send({ type: 'error', error: error.message });
+      process.exit(1);
+    });
+}
