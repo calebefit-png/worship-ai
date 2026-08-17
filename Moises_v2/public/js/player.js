@@ -87,6 +87,7 @@ class StemPlayer {
 
         const gainNode = this.ctx.createGain();
         gainNode.connect(this.masterGain);
+        this.gainNodes[stem] = gainNode;
         this.userVolume[stem] = 1;
         this.muted[stem] = false;
 
